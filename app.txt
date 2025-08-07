@@ -1,0 +1,111 @@
+from flask import Flask, request, jsonify, render_template
+import joblib
+import traceback
+from sklearn.preprocessing import LabelEncoder
+import os
+
+app = Flask(__name__)
+
+# Load all models and their configurations
+MODELS = {
+    'primary': {
+        'model': joblib.load('primary_features_model.pkl'),
+        'label_encoders': joblib.load('primary_features_label_encoders.pkl'),
+        'name': 'Primary Features Model',
+        'accuracy': '83.41%'  # You can update this with your actual accuracy
+    },
+    'secondary': {
+        'model': joblib.load('secondary_features_model.pkl') if os.path.exists('secondary_features_model.pkl') else None,
+        'label_encoders': joblib.load('secondary_features_label_encoders.pkl') if os.path.exists('secondary_features_label_encoders.pkl') else None,
+        'name': 'Secondary Features Model',
+        'accuracy': '85%'  # You can update this with your actual accuracy
+    }
+}
+
+def clean_ethnicity(ethnicity_str):
+    """Cleans the ethnicity string (lowercase and stripped)."""
+    return str(ethnicity_str).strip().lower()
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/model-info')
+def model_info():
+    dataset = request.args.get('dataset', 'primary')
+    if dataset not in MODELS or not MODELS[dataset]['model']:
+        return jsonify({'error': f'Invalid dataset: {dataset}'}), 400
+    
+    return jsonify({
+        'model_name': MODELS[dataset]['name'],
+        'model_accuracy': MODELS[dataset]['accuracy']
+    })
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        data = request.get_json(force=True)
+        dataset = data.get('dataset', 'primary')
+        
+        # Get the appropriate model and encoders
+        if dataset not in MODELS or not MODELS[dataset]['model']:
+            return jsonify({'error': f'Invalid dataset: {dataset}'}), 400
+            
+        model = MODELS[dataset]['model']
+        label_encoders = MODELS[dataset]['label_encoders']
+
+        age = int(data['age'])
+
+        # Use 'f' and 'm' to match the training
+        gender_str = data['gender'].lower()
+        if gender_str == 'male':
+            gender = label_encoders['Sex'].transform(['m'])[0]
+        elif gender_str == 'female':
+            gender = label_encoders['Sex'].transform(['f'])[0]
+        else:
+            return jsonify({'error': f"Invalid gender: {data['gender']}"}), 400
+
+        # Clean ethnicity and then transform
+        ethnicity_str = clean_ethnicity(data['ethnicity'])
+        try:
+            ethnicity = label_encoders['Ethnicity'].transform([ethnicity_str])[0]
+        except KeyError:
+            return jsonify({'error': f"Invalid ethnicity: '{data['ethnicity']}' (cleaned: '{ethnicity_str}')"}), 400
+
+        jaundice_str = data['jaundice'].lower()
+        try:
+            jaundice = label_encoders['Jaundice'].transform([jaundice_str])[0]
+        except KeyError:
+            return jsonify({'error': f"Invalid jaundice: {data['jaundice']}"}), 400
+
+        autism_str = data['austim'].lower()
+        try:
+            autism = label_encoders['Family_mem_with_ASD'].transform([autism_str])[0]
+        except KeyError:
+            return jsonify({'error': f"Invalid family history: {data['austim']}"}), 400
+
+        a1 = int(data['a1'])
+        a4 = int(data['a4'])
+        a10 = int(data['a10'])
+
+        yes_count = a1 + a4 + a10
+        percentage = (yes_count / 3) * 100 if 3 > 0 else 0
+
+        features = [[age, gender, ethnicity, jaundice, autism, a1, a4, a10]]
+        prediction = model.predict(features)
+        result = "Likely to have Autism" if prediction[0] == 1 else "Not likely to have Autism"
+
+        return jsonify({
+            'result': result, 
+            'yes_percentage': percentage,
+            'model_name': MODELS[dataset]['name'],
+            'model_accuracy': MODELS[dataset]['accuracy']
+        })
+
+    except Exception as e:
+        print("Prediction error:", e)
+        traceback.print_exc()
+        return jsonify({'error': 'Prediction failed'}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
